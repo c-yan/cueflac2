@@ -27,6 +27,11 @@ type
     function GetFileLineIndex(const Cue: TStringList): Integer;
     function ExtractWavFileName(const Line: string): string;
     procedure Log(const Fmt: string; const Args: array of const);
+    procedure ChangeWavToFlac(const FileName: string);
+    function IsWavFile(const FileName: string): Boolean;
+    procedure EncodeWavFile(const FileName: string);
+    procedure SaveCueFile(const Cue: TStringList; const FilePath: string);
+    function ChangeFileLineExtToFlac(const Line: string): string;
   public
     { Public 宣言 }
   end;
@@ -54,6 +59,21 @@ begin
   Result := Pos(ReverseString(Substr), ReverseString(S));
   if Result <> 0 then
     Result := Length(S) - (Result - 1) - (Length(Substr) - 1);
+end;
+
+function GetFileSize(const FileName: string): Int64;
+var
+  Handle: THandle;
+  Data: TWin32FindData;
+begin
+  Handle := FindFirstFile(PChar(FileName), Data);
+  if Handle = INVALID_HANDLE_VALUE then
+  begin
+    Result := -1;
+    Exit;
+  end;
+  Result := (Int64(Data.nFileSizeHigh) shl 32) + Data.nFileSizeLow;
+  Winapi.Windows.FindClose(Handle);
 end;
 
 procedure TForm1.MenuItem2Click(Sender: TObject);
@@ -86,13 +106,94 @@ begin
   end;
 end;
 
+procedure TForm1.SaveCueFile(const Cue: TStringList; const FilePath: string);
+var
+  LineIndex: Integer;
+begin
+  LineIndex := GetFileLineIndex(Cue);
+  Cue.Strings[LineIndex] := ChangeFileLineExtToFlac(Cue.Strings[LineIndex]);
+  Cue.SaveToFile(FilePath);
+end;
+
+function TForm1.ChangeFileLineExtToFlac(const Line: string): string;
+begin
+  Result := StringReplace(Line, '.wav', '.flac', []);
+end;
+
+procedure TForm1.ChangeWavToFlac(const FileName: string);
+var
+  Line: string;
+  Cue: TStringList;
+  WavFileName: string;
+  WaveFilePath: string;
+  WaveFileSize: Int64;
+  FlacFileName: string;
+  FlacFilePath: string;
+  FlacFileSize: Int64;
+begin
+  Cue := LoadCueFile(FileName);
+  try
+    Line := ExtractFileLine(Cue);
+    if Line = '' then
+    begin
+      Exit;
+    end;
+    WavFileName := ExtractWavFileName(Line);
+    if not IsWavFile(WavFileName) then
+    begin
+      Exit;
+    end;
+    WaveFilePath := ExtractFilePath(FileName) + WavFileName;
+    WaveFileSize := GetFileSize(WaveFilePath);
+    if WaveFileSize = -1 then
+    begin
+      Exit;
+    end;
+    Log('InFile: %s (%s bytes)', [WavFileName, FormatFloat('#,',
+      WaveFileSize)]);
+    EncodeWavFile(WaveFilePath);
+    FlacFileName := ChangeFileExt(WavFileName, '.flac');
+    FlacFilePath := ExtractFilePath(FileName) + FlacFileName;
+    FlacFileSize := GetFileSize(FlacFilePath);
+    Log('OutFile: %s (%s bytes / %.1f%%)',
+      [FlacFileName, FormatFloat('#,', FlacFileSize),
+      FlacFileSize / WaveFileSize * 100]);
+    if FlacFileSize = -1 then
+    begin
+      Exit;
+    end;
+    SaveCueFile(Cue, FileName);
+  finally
+    Cue.Free();
+  end;
+end;
+
 procedure TForm1.DoCueFLAC(const FileName: string);
 begin
   if IsCueFile(FileName) then
   begin
-    // ChangeWavToFlac(FileName);
+    ChangeWavToFlac(FileName);
     RestoreCueTimestamp(FileName);
   end;
+end;
+
+procedure TForm1.EncodeWavFile(const FileName: string);
+var
+  FlacExe: string;
+  PI: TProcessInformation;
+  SI: TStartupInfo;
+  CommandLine: string;
+begin
+  FlacExe := ExtractFilePath(Application.ExeName) + 'flac.exe';
+  FillChar(SI, SizeOf(SI), 0);
+  SI.cb := SizeOf(SI);
+  SI.dwFlags := STARTF_USESHOWWINDOW;
+  SI.wShowWindow := SW_MINIMIZE;
+  CommandLine := Format('"%s" "%s" "%s"', [FlacExe, '-8', FileName]);
+  CreateProcess(nil, PChar(CommandLine), nil, nil, false, 0, nil, nil, SI, PI);
+  WaitForSingleObject(PI.hProcess, INFINITE);
+  CloseHandle(PI.hThread);
+  CloseHandle(PI.hProcess);
 end;
 
 function TForm1.ExtractFileLine(const Cue: TStringList): string;
@@ -138,6 +239,11 @@ end;
 function TForm1.IsCueFile(const FileName: string): Boolean;
 begin
   Result := LowerCase(ExtractFileExt(FileName)) = '.cue';
+end;
+
+function TForm1.IsWavFile(const FileName: string): Boolean;
+begin
+  Result := LowerCase(ExtractFileExt(FileName)) = '.wav';
 end;
 
 function TForm1.LoadCueFile(const FileName: string): TStringList;
